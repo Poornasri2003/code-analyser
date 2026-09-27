@@ -8,8 +8,9 @@ This folder contains all hackathon submission deliverables.
 |---|---|---|
 | `problem-solution.md` | Problem & Solution Statement (≤500 words) | ✅ Done |
 | `bob-usage-statement.md` | IBM Bob Usage Statement (≤500 words) | ✅ Done |
-| `screenshots/` | App screenshots and demo evidence | ✏️ Add images |
-| `slide-presentation.pdf` | Slide deck for judges | ✏️ Add file |
+| `lablab-form.md` | Every form field, ready to paste, plus video script | ✅ Done |
+| `screenshots/cover.png` | Cover image | ✅ Done |
+| `slide-presentation.pdf` | Slide deck for judges (source: `Cartograph.pptx`) | ✅ Done |
 
 ## Submission Checklist (lablab.ai)
 

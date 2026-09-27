@@ -1,57 +1,34 @@
-# Problem & Solution Statement
+THE PROBLEM
 
-> IBM Bob 2.0 Hackathon — Team: Poornasri2003
-> Word count: 468
+Before a developer can change unfamiliar code, they have to work out what it is: the entry point, what calls what, where the auth check lives, which files are generated noise. Today that means grep, the file tree, and interrupting whoever knows the system.
 
----
+This cost recurs at onboarding, when a service is inherited, and whenever a reviewer opens a pull request in an unread module. The result is thrown away. The map one developer builds is never written down, so the next person starts from zero.
 
-## Problem
+Pasting the repository into a chat assistant does not fix this. The model re-reads raw files for every question, runs out of context window on anything bigger than a toy project, and gives a fluent answer with no way to check where it came from.
 
-Every developer who joins an unfamiliar codebase starts with the same unpaid
-task: working out what the thing *is* before changing any part of it. Which
-module is the entry point, what calls what, where the auth check actually
-lives, which files are generated noise. The available tools are `grep`, the
-file tree, and whoever happens to be free to answer questions.
+OUR SOLUTION
 
-This cost is paid over and over — at onboarding, when inheriting an unowned
-service, and every time a reviewer opens a pull request in code they have never
-read. It is slow, it interrupts the one person who does know the system, and
-its output is disposable: the mental map one developer builds is never written
-down, so the next person rebuilds it from scratch.
+Cartograph turns a repository into a queryable knowledge graph once, then answers questions from that graph instead of re-reading the source.
 
-Pasting a repository into a chat assistant does not solve this. The model
-re-reads raw files on every single question, hits the context window on
-anything larger than a toy project, and answers with no way to verify where a
-claim came from. You get fluent text and no accountability.
+What you give it: a public Git URL or an uploaded .zip.
 
-## Solution
+What it does:
+1. Plan: the Planner agent sees the whole file tree, routes every file to code, doc or skip (with a reason), and ranks it by priority. A capped run analyses entry points first, not the alphabetically first files.
+2. Extract: the Code and Doc agents describe each file as typed nodes and relationships.
+3. Validate: plain Python drops hallucinated line ranges and edges to nodes that do not exist.
+4. Link: the Linker resolves references across files into one connected graph, which is embedded and stored in Neo4j or in memory.
+5. Answer: a question retrieves the relevant subgraph, and the Answer agent replies with citations. If it cites a node that was not in the retrieved context, the answer comes back grounded=false instead of being shown as fact.
 
-**Code Analyser turns a repository into a queryable knowledge graph once, then
-answers questions from that graph instead of re-reading the source.**
+WHO USES IT, AND HOW
 
-Point it at a public Git URL or upload a `.zip`. A multi-agent pipeline runs:
+New joiners, reviewers working in unfamiliar code, engineers who inherit a service, and leads writing onboarding docs. They paste a URL into the web UI, watch a live trace of every agent call with the tokens spent, browse the resulting graph, overview and call graph, and ask questions in plain English. Teams can also use the REST API (/analyse, /jobs, /ask) or the CLI.
 
-1. **Planner** sees the whole file manifest and routes every file — `code`,
-   `doc`, or `skip` with a stated reason — and ranks it by priority, so a
-   budgeted run analyses the files that matter rather than the alphabetically
-   first ones.
-2. **Code and Doc agents** describe each file as typed nodes and relationships.
-3. A **validator** drops hallucinated line numbers and dangling edges.
-4. The **Linker** resolves cross-file references into one connected graph.
-5. Nodes are embedded and written to Neo4j or an in-memory store.
+WHAT MAKES IT DIFFERENT
 
-Asking a question then retrieves a subgraph and answers from it **with
-citations**. If the model cites a node that is not in the retrieved context,
-the answer is returned `grounded=False` rather than shown as fact — it fails
-closed instead of bluffing.
+- Read once, answer many times: a chat assistant re-reads the whole repository for each question. Cartograph reads it once, then each question needs only one small retrieval.
+- Fails closed: an answer that cannot be traced to the graph is flagged as ungrounded, never presented as fact.
+- The LLM reasons, Python decides: the orchestrator owns ordering, retries, validation, ids and storage. Agents only return JSON.
+- Durable and shared: the graph outlives the session, so the next teammate does not rebuild the map.
+- IBM-first and model-agnostic: IBM watsonx.ai (Granite) is the default provider, and Bob Shell is a selectable provider. Switching models is one environment variable.
 
-**The impact is a change in cost curve.** Understanding a repository by
-grep-and-chat costs a full crawl *per question*. Code Analyser pays that cost
-once, then serves every later question from one retrieval. The graph is
-durable, shared, and re-usable by the whole team, and the UI shows the live
-trace, token spend, and node/edge counts for each run, so the work is auditable
-rather than a black box.
-
-IBM Bob 2.0 made this buildable in a weekend — and Bob is wired into the
-product itself as a selectable `LLM_PROVIDER`, so the assistant that built the
-analyser can also power it.
+Built with IBM Bob 2.0, Python, FastAPI and Neo4j; 34 offline tests.
