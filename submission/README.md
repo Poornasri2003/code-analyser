@@ -6,8 +6,8 @@ This folder contains all hackathon submission deliverables.
 
 | File/Folder | Description | Status |
 |---|---|---|
-| `problem-solution.md` | Problem & Solution Statement (≤500 words) | ✏️ Fill in |
-| `bob-usage-statement.md` | IBM Bob Usage Statement (≤500 words) | ✏️ Fill in |
+| `problem-solution.md` | Problem & Solution Statement (≤500 words) | ✅ Done |
+| `bob-usage-statement.md` | IBM Bob Usage Statement (≤500 words) | ✅ Done |
 | `screenshots/` | App screenshots and demo evidence | ✏️ Add images |
 | `slide-presentation.pdf` | Slide deck for judges | ✏️ Add file |
 
