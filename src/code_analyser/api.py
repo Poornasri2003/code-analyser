@@ -151,12 +151,15 @@ async def index():
     <div id="tab-analyse" class="section active">
       <div class="card">
         <h2>🔍 Analyse a Codebase</h2>
-        <label>GitHub URL or local path</label>
+        <label>GitHub URL</label>
         <input id="source" type="text" placeholder="https://github.com/owner/repo" />
+        <div style="text-align:center;color:#8b949e;margin:10px 0">— or —</div>
+        <label>Upload a .zip of your codebase or documents</label>
+        <input id="zipfile" type="file" accept=".zip" />
         <label>User ID (for tenant isolation)</label>
         <input id="user_id" type="text" value="demo" />
         <label>Max files (optional)</label>
-        <input id="max_files" type="number" placeholder="500" />
+        <input id="max_files" type="number" placeholder="6" />
         <br/>
         <button onclick="analyse()">Analyse →</button>
         <div class="spinner" id="analyse-spinner"></div>
@@ -232,7 +235,9 @@ GET /health                 # health check
 
     async function analyse() {
       const source = document.getElementById('source').value.trim();
-      if (!source) { alert('Enter a source URL or path'); return; }
+      const zipInput = document.getElementById('zipfile');
+      const zipFile = zipInput && zipInput.files.length ? zipInput.files[0] : null;
+      if (!source && !zipFile) { alert('Enter a GitHub URL or choose a .zip file'); return; }
       const user_id = document.getElementById('user_id').value || 'demo';
       const max_files = document.getElementById('max_files').value;
 
@@ -240,28 +245,104 @@ GET /health                 # health check
       document.getElementById('analyse-result').classList.remove('visible');
       document.getElementById('run-id-holder').style.display = 'none';
 
-      const body = { source, user_id };
-      if (max_files) body.max_files = parseInt(max_files);
+      const out = document.getElementById('analyse-result');
+      const show = (t) => { out.innerHTML = t; out.classList.add('visible'); };
 
       try {
-        const resp = await fetch('/analyse', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(body)
-        });
-        const data = await resp.json();
-        document.getElementById('analyse-result').textContent = JSON.stringify(data, null, 2);
-        document.getElementById('analyse-result').classList.add('visible');
-        if (data.run_id) {
-          document.getElementById('run-id-value').textContent = data.run_id;
-          document.getElementById('run-id-holder').style.display = 'block';
+        let data;
+        if (zipFile) {
+          const fd = new FormData();
+          fd.append('file', zipFile);
+          fd.append('user_id', user_id);
+          if (max_files) fd.append('max_files', max_files);
+          const resp = await fetch('/analyse-upload', { method: 'POST', body: fd });
+          data = await resp.json();
+          if (!resp.ok) throw new Error(data.detail || 'Upload failed');
+        } else {
+          const body = { source, user_id };
+          if (max_files) body.max_files = parseInt(max_files);
+          const resp = await fetch('/analyse', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+          });
+          data = await resp.json();
+          if (!resp.ok) throw new Error(data.detail || 'Analyse failed');
         }
+
+        const job = data.job_id;
+        document.getElementById('run-id-value').textContent = data.run_id;
+        document.getElementById('run-id-holder').style.display = 'block';
+        document.getElementById('ask-run-id').value = data.run_id;
+
+        // The run happens in the background, so poll until it finishes.
+        let report = null;
+        for (let i = 0; i < 400; i++) {
+          show('Reading files and building the graph… (' + (i * 3) + 's)');
+          await new Promise(r => setTimeout(r, 3000));
+          const s = await (await fetch('/jobs/' + job)).json();
+          if (s.status === 'error') throw new Error(s.error);
+          if (s.status === 'done') { report = s.report; break; }
+        }
+        if (!report) throw new Error('Timed out');
+
+        show('Graph built: <b>' + report.nodes_written + '</b> nodes, <b>' +
+             report.edges_written + '</b> relationships from <b>' +
+             report.files_processed + '</b> files. Writing the explanation…');
+
+        const ov = await (await fetch('/overview/' + data.run_id +
+                                      '?user_id=' + encodeURIComponent(user_id))).json();
+        renderOverview(ov, report);
       } catch (e) {
-        document.getElementById('analyse-result').textContent = 'Error: ' + e.message;
-        document.getElementById('analyse-result').classList.add('visible');
+        show('<span style="color:#f85149">Error: ' + e.message + '</span>');
       } finally {
         document.getElementById('analyse-spinner').classList.remove('visible');
       }
+    }
+
+    function renderOverview(ov, report) {
+      const esc = s => String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      let h = '<h3 style="margin-top:0">' +
+              (ov.kind === 'codebase' ? 'Codebase explained' : 'Documents explained') +
+              '</h3>';
+      h += '<p>' + esc(ov.summary) + '</p>';
+      if (ov.flow && ov.flow.length) {
+        h += '<h4>How it works, step by step</h4><ol>';
+        ov.flow.forEach(s => h += '<li>' + esc(s) + '</li>');
+        h += '</ol>';
+      }
+      if (ov.entry_points && ov.entry_points.length) {
+        h += '<h4>Entry points</h4><ul>';
+        ov.entry_points.forEach(s => h += '<li>' + esc(s) + '</li>');
+        h += '</ul>';
+      }
+      if (ov.components && ov.components.length) {
+        h += '<h4>Components</h4>';
+        ov.components.forEach(c => {
+          h += '<div style="margin:8px 0;padding:8px;background:#0d1117;border-radius:6px">' +
+               '<b>' + esc(c.file) + '</b> — ' + esc(c.role);
+          if (c.key_symbols && c.key_symbols.length) {
+            h += '<ul>';
+            c.key_symbols.forEach(k => h += '<li>' + esc(k) + '</li>');
+            h += '</ul>';
+          }
+          h += '</div>';
+        });
+      }
+      if (ov.how_to_explore && ov.how_to_explore.length) {
+        h += '<h4>Where to start reading</h4><ul>';
+        ov.how_to_explore.forEach(s => h += '<li>' + esc(s) + '</li>');
+        h += '</ul>';
+      }
+      const st = ov.stats || {};
+      h += '<p style="color:#8b949e;font-size:13px">' + st.nodes + ' nodes · ' +
+           st.edges + ' relationships · ' + st.files + ' files · ' +
+           JSON.stringify(st.by_type || {}) + '</p>';
+      h += '<p style="color:#8b949e;font-size:13px">Now switch to the ' +
+           '<b>Ask</b> tab — the Run ID is already filled in.</p>';
+      const out = document.getElementById('analyse-result');
+      out.innerHTML = h; out.classList.add('visible');
     }
 
     async function askQuestion() {
@@ -403,6 +484,141 @@ async def get_job(job_id: str):
     if job_id not in _jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     return _jobs[job_id]
+
+
+def _collect_graph(user_id: str, run_id: str):
+    store = _get_store()
+    nodes = store.query_nodes(user_id, run_id, limit=500)
+    if hasattr(store, "_edges"):
+        edges = [
+            e for e in store._edges
+            if e.get("user_id") == user_id and e.get("run_id") == run_id
+        ]
+    else:
+        edges = []
+    return nodes, edges
+
+
+@app.get("/overview/{run_id}")
+async def overview(run_id: str, user_id: str = "demo"):
+    """A written walkthrough of whatever was just analysed, built from the
+    whole graph rather than a retrieved slice."""
+    nodes, edges = _collect_graph(user_id, run_id)
+    if not nodes:
+        raise HTTPException(status_code=404, detail="No graph for this run")
+
+    by_id = {n["id"]: n for n in nodes}
+    kinds = {}
+    for n in nodes:
+        kinds.setdefault(n.get("type", "?"), []).append(n)
+
+    by_file: Dict[str, List[Dict[str, Any]]] = {}
+    for n in nodes:
+        by_file.setdefault(n.get("path") or "(no file)", []).append(n)
+
+    lines = []
+    for path, members in sorted(by_file.items()):
+        lines.append(f"FILE {path}")
+        for m in sorted(members, key=lambda x: x.get("line_start") or 0):
+            sig = (m.get("props") or {}).get("signature") if isinstance(m.get("props"), dict) else None
+            lines.append(
+                f"  - [{m.get('type')}] {m.get('name')}"
+                f"{' ' + sig if sig else ''}"
+                f" (lines {m.get('line_start')}-{m.get('line_end')}): {m.get('description')}"
+            )
+    for e in edges:
+        s = by_id.get(e.get("source_id"), {}).get("name")
+        t = by_id.get(e.get("target_id"), {}).get("name")
+        if s and t:
+            lines.append(f"EDGE {s} -{e.get('type')}-> {t}: {e.get('description') or ''}")
+
+    is_code = any(
+        n.get("type") in {"Function", "Method", "Class", "Module"} for n in nodes
+    )
+    if is_code:
+        system = (
+            "You explain unfamiliar codebases to a new engineer. Using ONLY the "
+            "graph below, write json with these keys:\n"
+            '{"summary": "3-4 sentences on what this project is and does",\n'
+            ' "flow": ["ordered steps describing how control moves through the '
+            'system, naming the real functions and files"],\n'
+            ' "components": [{"file": "path", "role": "what this file is for", '
+            '"key_symbols": ["name — what it does"]}],\n'
+            ' "entry_points": ["where execution starts"],\n'
+            ' "how_to_explore": ["what a newcomer should read first, and why"]}\n'
+            "Name only files and symbols that appear in the graph. Never invent."
+        )
+    else:
+        system = (
+            "You explain documents to someone who has not read them. Using ONLY "
+            "the graph below, write json with these keys:\n"
+            '{"summary": "3-4 sentences on what these documents cover",\n'
+            ' "flow": ["the main points in the order they are presented"],\n'
+            ' "components": [{"file": "path", "role": "what this document covers", '
+            '"key_symbols": ["topic — what it says"]}],\n'
+            ' "entry_points": ["which document to read first"],\n'
+            ' "how_to_explore": ["what to read next, and why"]}\n'
+            "Name only documents and topics present in the graph. Never invent."
+        )
+
+    from code_analyser.llm.factory import get_client
+    try:
+        raw, _ = get_client().complete_json(
+            system, "GRAPH:\n" + "\n".join(lines)[:14000], max_tokens=2000
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Overview failed: {e}")
+
+    raw["kind"] = "codebase" if is_code else "documents"
+    raw["stats"] = {
+        "nodes": len(nodes),
+        "edges": len(edges),
+        "files": len([p for p in by_file if p != "(no file)"]),
+        "by_type": {k: len(v) for k, v in sorted(kinds.items())},
+    }
+    return raw
+
+
+@app.get("/symbols/{run_id}")
+async def symbols(run_id: str, user_id: str = "demo", name: Optional[str] = None):
+    """Every function/class in the graph, with what calls it and what it calls.
+    Answers "list all functions and their calls" exactly, without an LLM."""
+    nodes, edges = _collect_graph(user_id, run_id)
+    if not nodes:
+        raise HTTPException(status_code=404, detail="No graph for this run")
+    by_id = {n["id"]: n for n in nodes}
+
+    wanted = {"Function", "Method", "Class", "Module"}
+    out = []
+    for n in nodes:
+        if n.get("type") not in wanted:
+            continue
+        if name and name.lower() not in (n.get("name") or "").lower():
+            continue
+        calls, called_by = [], []
+        for e in edges:
+            src, tgt = by_id.get(e.get("source_id")), by_id.get(e.get("target_id"))
+            if e.get("source_id") == n["id"] and tgt:
+                calls.append({"name": tgt.get("name"), "type": e.get("type"),
+                              "path": tgt.get("path")})
+            if e.get("target_id") == n["id"] and src:
+                called_by.append({"name": src.get("name"), "type": e.get("type"),
+                                  "path": src.get("path")})
+        props = n.get("props") if isinstance(n.get("props"), dict) else {}
+        out.append({
+            "name": n.get("name"),
+            "type": n.get("type"),
+            "path": n.get("path"),
+            "lines": [n.get("line_start"), n.get("line_end")],
+            "description": n.get("description"),
+            "signature": props.get("signature"),
+            "inputs": props.get("inputs"),
+            "outputs": props.get("outputs"),
+            "calls": calls,
+            "called_by": called_by,
+        })
+    out.sort(key=lambda s: ((s["path"] or ""), s["lines"][0] or 0))
+    return {"run_id": run_id, "count": len(out), "symbols": out}
 
 
 @app.post("/ask")

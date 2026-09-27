@@ -27,3 +27,6 @@ BATCH_SIZE: int = 500
 
 PLANNER_MAX_LINES: int = 100
 PLANNER_MAX_FILES: int = 15
+# How many paths the planner may see before routing. Larger than MAX_FILES so
+# priorities are chosen across the whole tree, not an alphabetical slice.
+PLANNER_MANIFEST_LIMIT: int = int(os.getenv("ANALYSER_PLANNER_MANIFEST_LIMIT", "300"))

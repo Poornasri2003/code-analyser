@@ -95,7 +95,10 @@ class Orchestrator:
         root = resolve_source(source, self.workdir)
 
         # ── 2. Walk files ─────────────────────────────────────────────────────
-        relpaths = walk_files(root)[:max_files]
+        # The planner sees the whole tree, because truncating here would hand it
+        # an alphabetical slice and its priorities could never surface the files
+        # that matter. max_files is applied after routing instead.
+        relpaths = walk_files(root)[:config.PLANNER_MANIFEST_LIMIT]
         manifest = _build_manifest(root, relpaths)
         report.files_total = len(manifest)
 
@@ -113,9 +116,16 @@ class Orchestrator:
             report.elapsed_seconds = time.time() - t0
             return report
 
-        # Sort routes by priority
+        # Highest-priority files first, then apply the budget, so a capped run
+        # analyses the important files rather than the alphabetically first ones.
         routes_by_path = {r.path: r for r in plan.routes}
-        sorted_routes = sorted(plan.routes, key=lambda r: (r.priority, r.path))
+        analysable = sorted(
+            (r for r in plan.routes if r.route != "skip"),
+            key=lambda r: (r.priority, r.path),
+        )
+        report.files_skipped += len(plan.routes) - len(analysable)
+        sorted_routes = analysable[:max_files]
+        report.files_skipped += len(analysable) - len(sorted_routes)
 
         # ── 4. Extract file by file ───────────────────────────────────────────
         staged_nodes: List[GraphNode] = []

@@ -1,9 +1,19 @@
 """Source resolution and file walking tools."""
 from __future__ import annotations
+import hashlib
 import os
+import re
+import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 from typing import List
+
+# Only these transports are accepted. git's ext:: and file:: helpers can run
+# arbitrary commands, so the clone is restricted to the network protocols.
+_GIT_URL_RE = re.compile(r"^(https?://|ssh://|git://|[\w.-]+@[\w.-]+:)", re.I)
+_ALLOWED_GIT_PROTOCOLS = "https:http:ssh:git"
+_CLONE_TIMEOUT_SECONDS = 300
 
 # Directories to skip entirely
 _SKIP_DIRS = {
@@ -36,6 +46,9 @@ def resolve_source(source: str, workdir: Path) -> Path:
 
     Raises ``ValueError`` for invalid inputs or zip-slip attempts.
     """
+    if _GIT_URL_RE.match(source):
+        return _clone(source, workdir)
+
     p = Path(source)
 
     if p.is_dir():
@@ -45,13 +58,56 @@ def resolve_source(source: str, workdir: Path) -> Path:
         return _extract_zip(p, workdir)
 
     raise ValueError(
-        f"Source {source!r} is not a directory or a .zip file, or does not exist."
+        f"Source {source!r} is not a git URL, a directory, or a .zip file."
     )
 
 
+def _force_rmtree(path: Path) -> None:
+    """Git marks objects read-only, which blocks rmtree on Windows."""
+    def _on_error(func, p, _exc):
+        try:
+            os.chmod(p, 0o700)
+            func(p)
+        except OSError:
+            pass
+
+    shutil.rmtree(path, onerror=_on_error)
+
+
+def _fresh_dir(workdir: Path, key: str, *, create: bool) -> Path:
+    """A destination unique to *key* and cleared first, so one run can never
+    see files left behind by a previous one."""
+    dest = workdir / hashlib.sha1(key.encode()).hexdigest()[:16]
+    if dest.exists():
+        _force_rmtree(dest)
+    if dest.exists():
+        raise ValueError(f"Could not clear workspace {dest}; it is still in use.")
+    if create:
+        dest.mkdir(parents=True, exist_ok=True)
+    else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    return dest
+
+
+def _clone(url: str, workdir: Path) -> Path:
+    # git refuses a non-empty target, so let it create the directory itself.
+    dest = _fresh_dir(workdir, url, create=False)
+    env = {**os.environ,
+           "GIT_ALLOW_PROTOCOL": _ALLOWED_GIT_PROTOCOLS,
+           "GIT_TERMINAL_PROMPT": "0"}  # fail instead of hanging on auth
+    proc = subprocess.run(
+        ["git", "clone", "--depth", "1", "--single-branch", "--no-tags", url, str(dest)],
+        capture_output=True, text=True, timeout=_CLONE_TIMEOUT_SECONDS, env=env,
+    )
+    if proc.returncode != 0:
+        if dest.exists():
+            _force_rmtree(dest)
+        raise ValueError(f"git clone failed for {url!r}: {proc.stderr.strip()[:300]}")
+    return dest
+
+
 def _extract_zip(zip_path: Path, workdir: Path) -> Path:
-    dest = workdir / zip_path.stem
-    dest.mkdir(parents=True, exist_ok=True)
+    dest = _fresh_dir(workdir, str(zip_path.resolve()), create=True)
     dest_resolved = dest.resolve()
 
     with zipfile.ZipFile(zip_path) as zf:
