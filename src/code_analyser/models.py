@@ -98,6 +98,8 @@ class Citation(BaseModel):
     path: str
     line_start: Optional[int] = None
     line_end: Optional[int] = None
+    name: Optional[str] = None
+    type: Optional[str] = None
 
 
 class AnswerOutput(BaseModel):
@@ -105,6 +107,14 @@ class AnswerOutput(BaseModel):
     citations: List[Citation] = Field(default_factory=list)
     grounded: bool = True
     subgraph_node_ids: List[str] = Field(default_factory=list)
+    # "explain" answers how something works; "change" plans a modification.
+    mode: str = "explain"
+    steps: List[str] = Field(default_factory=list)
+    where_to_add: List[Dict[str, Any]] = Field(default_factory=list)
+    impact: List[Dict[str, Any]] = Field(default_factory=list)
+    also_update: List[str] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+    follow_ups: List[str] = Field(default_factory=list)
 
 
 # ── Stored nodes/edges (after id assignment) ──────────────────────────────────

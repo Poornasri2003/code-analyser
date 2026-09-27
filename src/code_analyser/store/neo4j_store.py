@@ -167,16 +167,47 @@ class Neo4jStore:
             all_nodes = all_nodes[:60]
             final_ids = {n["id"] for n in all_nodes}
 
-            # fetch edges
+            # A relationship's own properties do not include its endpoints, so
+            # they must be returned explicitly or nobody can tell who calls whom.
             edges_result = session.run(
                 """MATCH (a:Node)-[e:REL]->(b:Node)
                 WHERE a.id IN $ids AND b.id IN $ids
-                RETURN e""",
+                RETURN a.id AS source_id, b.id AS target_id, e.type AS type,
+                       e.description AS description,
+                       e.evidence_path AS evidence_path,
+                       e.evidence_line AS evidence_line""",
                 ids=list(final_ids),
             )
-            edges = [dict(r["e"]) for r in edges_result]
+            edges = [dict(r) for r in edges_result]
 
             return [{"nodes": all_nodes, "edges": edges}]
+
+    def query_all(
+        self, user_id: str, run_id: str, *, limit: int = 500
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """The whole graph for one run: every node and every edge."""
+        with self._driver.session() as session:
+            nodes = [
+                {k: v for k, v in dict(r["n"]).items() if k != "embedding"}
+                for r in session.run(
+                    "MATCH (n:Node {user_id: $u, run_id: $r}) RETURN n LIMIT $l",
+                    u=user_id, r=run_id, l=limit,
+                )
+            ]
+            edges = [
+                dict(r) for r in session.run(
+                    """MATCH (a:Node {user_id: $u, run_id: $r})-[e:REL]->(b:Node)
+                    RETURN a.id AS source_id, b.id AS target_id, e.type AS type,
+                           e.description AS description,
+                           e.evidence_path AS evidence_path,
+                           e.evidence_line AS evidence_line""",
+                    u=user_id, r=run_id,
+                )
+            ]
+        return nodes, edges
+
+    def query_nodes(self, user_id: str, run_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        return self.query_all(user_id, run_id, limit=limit)[0]
 
     def close(self) -> None:
         self._driver.close()

@@ -238,28 +238,52 @@ class Orchestrator:
         user_id: str,
         run_id: str,
         k: int = 8,
+        history: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         from code_analyser.agents.answer import run_answer_agent
+        from code_analyser.graph_context import render_context
 
-        # embed the question
-        qvec = self.embed_fn([question])[0]
+        no_graph = {
+            "answer": "No graph found for this run. Please analyse a source first.",
+            "citations": [],
+            "grounded": False,
+            "subgraph_node_ids": [],
+        }
+        history = history or []
+        nodes: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
+        mode = "retrieved"
 
-        # retrieve subgraph
-        results = self.store.query(user_id, run_id, qvec, k=k)
-        if not results:
-            return {
-                "answer": "No graph found for this run. Please analyse a source first.",
-                "citations": [],
-                "grounded": False,
-                "subgraph_node_ids": [],
-            }
+        # Impact analysis needs every caller, not just the nearest matches, so
+        # when the whole graph fits the budget the model gets all of it.
+        if hasattr(self.store, "query_all"):
+            all_nodes, all_edges = self.store.query_all(user_id, run_id)
+            if not all_nodes:
+                return no_graph
+            text, shown = render_context(
+                all_nodes, all_edges, config.ANSWER_CONTEXT_CHARS, group_by_file=True
+            )
+            if len(shown) == len(all_nodes):
+                nodes, edges, mode = all_nodes, all_edges, "full"
 
-        subgraph = results[0]
-        nodes = subgraph.get("nodes", [])
-        edges = subgraph.get("edges", [])
+        if mode != "full":
+            # A follow-up like "and what calls that?" only makes sense with the
+            # previous question, so search with both.
+            prev = next((t.get("q") for t in reversed(history) if t.get("q")), "")
+            qvec = self.embed_fn([f"{question}\n{prev}".strip()])[0]
+            results = self.store.query(user_id, run_id, qvec, k=k)
+            if not results:
+                return no_graph
+            nodes = results[0].get("nodes", [])
+            edges = results[0].get("edges", [])
 
-        answer = run_answer_agent(question, nodes, edges, self.client)
-        return answer.model_dump()
+        if hasattr(self.client, "stage"):
+            self.client.stage = "answer"
+        answer = run_answer_agent(question, nodes, edges, self.client, history=history)
+        out = answer.model_dump()
+        out["context_mode"] = mode
+        out["context_nodes"] = len(nodes)
+        return out
 
     def _retry_agent(self, fn, label: str, report: RunReport):
         """Run fn(), retry once on LLMFormatError, record failure and return None on second failure."""

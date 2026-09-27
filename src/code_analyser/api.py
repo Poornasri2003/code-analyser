@@ -68,500 +68,33 @@ class AskRequest(BaseModel):
     user_id: str = "demo"
     run_id: str
     k: int = 8
+    # Earlier turns, so a follow-up like "and what calls that?" can be resolved.
+    history: List[Dict[str, str]] = []
+
+
+_WEB_DIR = Path(__file__).parent / "web"
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    """Landing page with simple UI."""
-    html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Code Analyser — IBM Bob 2.0 Hackathon</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-           background: #0f1117; color: #e6edf3; min-height: 100vh; }
-    .header { background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
-              border-bottom: 1px solid #30363d; padding: 24px 32px;
-              display: flex; align-items: center; gap: 16px; }
-    .header h1 { font-size: 1.5rem; font-weight: 700; color: #58a6ff; }
-    .header p { color: #8b949e; font-size: 0.875rem; margin-top: 4px; }
-    .badge { background: #1d4ed8; color: #93c5fd; padding: 2px 10px;
-             border-radius: 99px; font-size: 0.75rem; font-weight: 600; }
-    .container { max-width: 960px; margin: 0 auto; padding: 32px 24px; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px;
-            padding: 28px; margin-bottom: 24px; }
-    .card h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 16px;
-               color: #f0f6fc; display: flex; align-items: center; gap: 8px; }
-    label { display: block; font-size: 0.875rem; color: #8b949e;
-            margin-bottom: 6px; margin-top: 14px; }
-    input, textarea { width: 100%; background: #0d1117; border: 1px solid #30363d;
-             border-radius: 8px; padding: 10px 14px; color: #e6edf3;
-             font-size: 0.9rem; outline: none; transition: border-color 0.2s; }
-    input:focus, textarea:focus { border-color: #58a6ff; }
-    button { background: #1f6feb; color: #fff; border: none; border-radius: 8px;
-             padding: 10px 22px; font-size: 0.9rem; font-weight: 600;
-             cursor: pointer; margin-top: 16px; transition: background 0.2s; }
-    button:hover { background: #388bfd; }
-    button.secondary { background: #21262d; color: #e6edf3;
-                       border: 1px solid #30363d; }
-    button.secondary:hover { background: #30363d; }
-    .result { background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
-              padding: 16px; margin-top: 16px; white-space: pre-wrap;
-              font-family: monospace; font-size: 0.85rem; color: #7ee787;
-              max-height: 400px; overflow-y: auto; display: none; }
-    .result.visible { display: block; }
-    .grounded-yes { color: #3fb950; }
-    .grounded-no { color: #f85149; }
-    .tabs { display: flex; gap: 4px; margin-bottom: 24px; }
-    .tab { padding: 8px 20px; border-radius: 6px; cursor: pointer;
-           font-size: 0.875rem; font-weight: 500; border: 1px solid #30363d;
-           background: transparent; color: #8b949e; transition: all 0.2s; }
-    .tab.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-    .section { display: none; }
-    .section.active { display: block; }
-    .spinner { display: none; width: 20px; height: 20px; border: 2px solid #30363d;
-               border-top-color: #58a6ff; border-radius: 50%;
-               animation: spin 0.8s linear infinite; margin: 12px auto; }
-    .spinner.visible { display: block; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .answer-box { background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
-                  padding: 20px; margin-top: 16px; line-height: 1.7; display: none; }
-    .answer-box.visible { display: block; }
-    .citations { margin-top: 12px; }
-    .citation { font-size: 0.8rem; color: #8b949e; font-family: monospace;
-                padding: 2px 0; }
-    .run-id-display { font-family: monospace; background: #21262d;
-                      padding: 4px 10px; border-radius: 4px; font-size: 0.85rem;
-                      color: #58a6ff; margin-top: 8px; display: inline-block; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <div>
-      <h1>⬡ Code Analyser</h1>
-      <p>Unstructured code in, structured knowledge graph out</p>
-    </div>
-    <span class="badge">IBM Bob 2.0 Hackathon</span>
-  </div>
-  <div class="container">
-    <div class="tabs">
-      <button class="tab active" onclick="switchTab('analyse')">Analyse</button>
-      <button class="tab" onclick="switchTab('ask')">Ask</button>
-      <button class="tab" onclick="switchTab('api')">API Docs</button>
-    </div>
-
-    <div id="tab-analyse" class="section active">
-      <div class="card">
-        <h2>🔍 Analyse a Codebase</h2>
-        <label>GitHub URL</label>
-        <input id="source" type="text" placeholder="https://github.com/owner/repo" />
-        <div style="text-align:center;color:#8b949e;margin:10px 0">— or —</div>
-        <label>Upload a .zip of your codebase or documents</label>
-        <input id="zipfile" type="file" accept=".zip" />
-        <label>User ID (for tenant isolation)</label>
-        <input id="user_id" type="text" value="demo" />
-        <label>Max files (optional)</label>
-        <input id="max_files" type="number" placeholder="6" />
-        <br/>
-        <button onclick="analyse()">Analyse →</button>
-        <div class="spinner" id="analyse-spinner"></div>
-        <div class="result" id="analyse-result"></div>
-        <div class="card" id="graph-box" style="display:none;margin-top:16px"></div>
-        <div class="card" id="trace-box" style="display:none;margin-top:16px"></div>
-        <div id="run-id-holder" style="display:none">
-          Run ID: <span class="run-id-display" id="run-id-value"></span>
-          <br/><small style="color:#8b949e">Copy this to use in the Ask tab</small>
-        </div>
-      </div>
-    </div>
-
-    <div id="tab-ask" class="section">
-      <div class="card">
-        <h2>💬 Ask a Question</h2>
-        <label>Run ID (from Analyse step)</label>
-        <input id="ask-run-id" type="text" placeholder="abc12345" />
-        <label>User ID</label>
-        <input id="ask-user-id" type="text" value="demo" />
-        <label>Question</label>
-        <textarea id="question" rows="3"
-          placeholder="How does authentication work? What does the parse_token function do?"></textarea>
-        <label>Top-k nodes (default 8)</label>
-        <input id="k" type="number" value="8" />
-        <br/>
-        <button onclick="askQuestion()">Ask →</button>
-        <div class="spinner" id="ask-spinner"></div>
-        <div class="answer-box" id="answer-box">
-          <div id="grounded-badge"></div>
-          <div id="answer-text" style="margin-top:8px; color:#e6edf3"></div>
-          <div class="citations" id="citations"></div>
-        </div>
-      </div>
-    </div>
-
-    <div id="tab-api" class="section">
-      <div class="card">
-        <h2>📖 API Reference</h2>
-        <p style="color:#8b949e; margin-bottom:16px">
-          Full OpenAPI docs at <a href="/docs" style="color:#58a6ff">/docs</a>
-        </p>
-        <pre style="background:#0d1117; border:1px solid #30363d; border-radius:8px;
-                    padding:16px; font-size:0.82rem; overflow-x:auto; color:#7ee787">
-POST /analyse
-{
-  "source": "https://github.com/owner/repo",
-  "user_id": "demo",
-  "run_id": "optional-custom-id",
-  "max_files": 200
-}
-
-POST /ask
-{
-  "question": "How does authentication work?",
-  "user_id": "demo",
-  "run_id": "your-run-id",
-  "k": 8
-}
-
-GET /jobs/{job_id}          # poll analyse job status
-GET /health                 # health check
-        </pre>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    function switchTab(name) {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-      event.target.classList.add('active');
-      document.getElementById('tab-' + name).classList.add('active');
-    }
-
-    async function analyse() {
-      const source = document.getElementById('source').value.trim();
-      const zipInput = document.getElementById('zipfile');
-      const zipFile = zipInput && zipInput.files.length ? zipInput.files[0] : null;
-      if (!source && !zipFile) { alert('Enter a GitHub URL or choose a .zip file'); return; }
-      const user_id = document.getElementById('user_id').value || 'demo';
-      const max_files = document.getElementById('max_files').value;
-
-      document.getElementById('analyse-spinner').classList.add('visible');
-      document.getElementById('analyse-result').classList.remove('visible');
-      document.getElementById('run-id-holder').style.display = 'none';
-
-      const out = document.getElementById('analyse-result');
-      const show = (t) => { out.innerHTML = t; out.classList.add('visible'); };
-
-      try {
-        let data;
-        if (zipFile) {
-          const fd = new FormData();
-          fd.append('file', zipFile);
-          fd.append('user_id', user_id);
-          if (max_files) fd.append('max_files', max_files);
-          const resp = await fetch('/analyse-upload', { method: 'POST', body: fd });
-          data = await resp.json();
-          if (!resp.ok) throw new Error(data.detail || 'Upload failed');
-        } else {
-          const body = { source, user_id };
-          if (max_files) body.max_files = parseInt(max_files);
-          const resp = await fetch('/analyse', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body)
-          });
-          data = await resp.json();
-          if (!resp.ok) throw new Error(data.detail || 'Analyse failed');
-        }
-
-        const job = data.job_id;
-        document.getElementById('run-id-value').textContent = data.run_id;
-        document.getElementById('run-id-holder').style.display = 'block';
-        document.getElementById('ask-run-id').value = data.run_id;
-
-        // Poll until the run finishes, showing the trace as it arrives
-        // instead of an opaque spinner.
-        let report = null, lastJob = null;
-        for (let i = 0; i < 500; i++) {
-          await new Promise(r => setTimeout(r, 2500));
-          const s = await (await fetch('/jobs/' + job)).json();
-          lastJob = s;
-          renderProgress(s, i * 2.5);
-          if (s.status === 'error') throw new Error(s.error);
-          if (s.status === 'done') { report = s.report; break; }
-        }
-        if (!report) throw new Error('Timed out');
-
-        show('Graph built: <b>' + report.nodes_written + '</b> nodes, <b>' +
-             report.edges_written + '</b> relationships from <b>' +
-             report.files_processed + '</b> files. Writing the explanation…');
-
-        const ov = await (await fetch('/overview/' + data.run_id +
-                                      '?user_id=' + encodeURIComponent(user_id))).json();
-        renderOverview(ov, report);
-        renderTrace(lastJob);
-        loadGraph(data.run_id, user_id);
-      } catch (e) {
-        show('<span style="color:#f85149">Error: ' + e.message + '</span>');
-      } finally {
-        document.getElementById('analyse-spinner').classList.remove('visible');
-      }
-    }
-
-
-    const STAGE_LABEL = {
-      resolve: 'Fetching the source',
-      walk: 'Listing files',
-      planner: 'Planner deciding what to read',
-      linker: 'Linker connecting files',
-      embed: 'Building embeddings',
-      store: 'Writing the graph'
-    };
-
-    function esc(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    function renderProgress(s, secs) {
-      const ev = s.trace || [];
-      const cur = s.current || 'starting';
-      const label = STAGE_LABEL[cur] ||
-        (cur.indexOf('extract:') === 0 ? 'Reading ' + cur.slice(8) : cur);
-      const sum = s.trace_summary || {};
-      let h = '<div style="font-weight:600;color:#58a6ff">' + esc(label) +
-              ' <span style="color:#8b949e;font-weight:400">&middot; ' +
-              Math.round(secs) + 's</span></div>';
-      h += '<div style="color:#8b949e;font-size:13px;margin:4px 0 10px">' +
-           (sum.llm_calls || 0) + ' LLM calls &middot; ' +
-           (sum.total_tokens || 0) + ' tokens</div>';
-      h += '<div style="max-height:220px;overflow:auto;font-family:ui-monospace,monospace;font-size:12px">';
-      ev.slice(-14).forEach(function (e) {
-        let line = '<span style="color:#8b949e">' + e.at + 's</span> ' + esc(e.stage);
-        if (e.event === 'llm_call') {
-          if (e.ok) {
-            line += ' <span style="color:#3fb950">LLM ok</span> ' +
-                    (e.tokens || 0) + ' tok, ' + e.seconds + 's' +
-                    (e.nodes ? ', ' + e.nodes + ' nodes' : '');
-          } else {
-            line += ' <span style="color:#f85149">LLM failed</span> ' +
-                    esc((e.error || '').slice(0, 90));
-          }
-        } else {
-          line += ' <span style="color:#8b949e">' + esc(e.event) + '</span>';
-          if (e.files_found != null) line += ' ' + e.files_found + ' files';
-        }
-        h += '<div>' + line + '</div>';
-      });
-      h += '</div>';
-      const out = document.getElementById('analyse-result');
-      out.innerHTML = h;
-      out.classList.add('visible');
-    }
-
-    function renderTrace(job) {
-      const box = document.getElementById('trace-box');
-      if (!box || !job || !job.trace) return;
-      const sum = job.trace_summary || {};
-      let h = '<h3>What actually happened</h3>';
-      h += '<p style="color:#8b949e">' + (sum.llm_calls || 0) + ' LLM calls &middot; ' +
-           (sum.total_tokens || 0) + ' tokens total</p>';
-      h += '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-           '<tr style="color:#8b949e;text-align:left">' +
-           '<th>at</th><th>stage</th><th>event</th><th>tokens</th><th>secs</th><th>result</th></tr>';
-      job.trace.forEach(function (e) {
-        let res = '';
-        if (e.event === 'llm_call') {
-          res = e.ok ? ((e.nodes || 0) + ' nodes, ' + (e.relationships || 0) + ' rels')
-                     : '<span style="color:#f85149">' + esc((e.error || '').slice(0, 70)) + '</span>';
-        } else if (e.selected) {
-          res = e.selected.length + ' files chosen';
-        } else if (e.files_found != null) {
-          res = e.files_found + ' files';
-        } else if (e.nodes != null) {
-          res = e.nodes + ' nodes';
-        }
-        h += '<tr style="border-top:1px solid #21262d">' +
-             '<td>' + e.at + 's</td><td>' + esc(e.stage) + '</td><td>' + esc(e.event) +
-             '</td><td>' + (e.tokens || '') + '</td><td>' + (e.seconds || '') +
-             '</td><td>' + res + '</td></tr>';
-      });
-      h += '</table>';
-      box.innerHTML = h;
-      box.style.display = 'block';
-    }
-
-    async function loadGraph(run_id, user_id) {
-      const box = document.getElementById('graph-box');
-      if (!box) return;
-      try {
-        const resp = await fetch('/graph/' + run_id + '?user_id=' + encodeURIComponent(user_id));
-        const g = await resp.json();
-        if (!g.nodes) { box.style.display = 'none'; return; }
-        drawGraph(g);
-        box.style.display = 'block';
-      } catch (e) {
-        box.style.display = 'none';
-      }
-    }
-
-    const TYPE_COLOR = {
-      File: '#58a6ff', Module: '#79c0ff', Class: '#d2a8ff', Function: '#3fb950',
-      Method: '#56d364', Document: '#f0883e', Section: '#ffa657',
-      Concept: '#e3b341', Entity: '#db6d28', Config: '#a5d6ff', Repo: '#8b949e'
-    };
-
-    function drawGraph(g) {
-      const W = 860, H = 460, cx = W / 2, cy = H / 2;
-      const n = g.nodes.length;
-      const pos = {};
-      // Ring layout: deterministic and readable, no physics needed.
-      g.nodes.forEach(function (nd, i) {
-        const a = (2 * Math.PI * i) / Math.max(n, 1) - Math.PI / 2;
-        const r = n <= 12 ? 165 : 195;
-        pos[nd.id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a), nd: nd };
-      });
-      let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto">';
-      svg += '<defs><marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">' +
-             '<path d="M0,0 L0,6 L9,3 z" fill="#484f58"></path></marker></defs>';
-      g.edges.forEach(function (e) {
-        const a = pos[e.source], b = pos[e.target];
-        if (!a || !b) return;
-        svg += '<line x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) +
-               '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) +
-               '" stroke="#30363d" stroke-width="1.2" marker-end="url(#ar)">' +
-               '<title>' + esc(e.type) + ': ' + esc(e.description) + '</title></line>';
-      });
-      Object.keys(pos).forEach(function (k) {
-        const p = pos[k];
-        const c = TYPE_COLOR[p.nd.type] || '#8b949e';
-        svg += '<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) +
-               '" r="9" fill="' + c + '" opacity="0.9">' +
-               '<title>' + esc(p.nd.type) + ' ' + esc(p.nd.name) + ' | ' +
-               esc(p.nd.path || '') + ' | ' + esc(p.nd.description || '') + '</title></circle>';
-        const anchor = p.x > cx ? 'start' : 'end';
-        const dx = p.x > cx ? 13 : -13;
-        svg += '<text x="' + (p.x + dx).toFixed(1) + '" y="' + (p.y + 4).toFixed(1) +
-               '" fill="#c9d1d9" font-size="11" text-anchor="' + anchor + '">' +
-               esc((p.nd.name || '').slice(0, 22)) + '</text>';
-      });
-      svg += '</svg>';
-      const legend = Object.keys(TYPE_COLOR)
-        .filter(function (k) { return g.nodes.some(function (x) { return x.type === k; }); })
-        .map(function (k) {
-          return '<span style="margin-right:12px"><span style="display:inline-block;width:9px;' +
-                 'height:9px;border-radius:50%;background:' + TYPE_COLOR[k] +
-                 ';margin-right:4px"></span>' + k + '</span>';
-        }).join('');
-      document.getElementById('graph-box').innerHTML =
-        '<h3>The graph</h3><div style="color:#8b949e;font-size:13px;margin-bottom:8px">' +
-        g.nodes.length + ' nodes &middot; ' + g.edges.length +
-        ' relationships &middot; hover any node or arrow for detail</div>' + svg +
-        '<div style="margin-top:8px;font-size:12px;color:#8b949e">' + legend + '</div>';
-    }
-
-    function renderOverview(ov, report) {
-      let h = '<h3 style="margin-top:0">' +
-              (ov.kind === 'codebase' ? 'Codebase explained' : 'Documents explained') +
-              '</h3>';
-      h += '<p>' + esc(ov.summary) + '</p>';
-      if (ov.flow && ov.flow.length) {
-        h += '<h4>How it works, step by step</h4><ol>';
-        ov.flow.forEach(s => h += '<li>' + esc(s) + '</li>');
-        h += '</ol>';
-      }
-      if (ov.entry_points && ov.entry_points.length) {
-        h += '<h4>Entry points</h4><ul>';
-        ov.entry_points.forEach(s => h += '<li>' + esc(s) + '</li>');
-        h += '</ul>';
-      }
-      if (ov.components && ov.components.length) {
-        h += '<h4>Components</h4>';
-        ov.components.forEach(c => {
-          h += '<div style="margin:8px 0;padding:8px;background:#0d1117;border-radius:6px">' +
-               '<b>' + esc(c.file) + '</b> — ' + esc(c.role);
-          if (c.key_symbols && c.key_symbols.length) {
-            h += '<ul>';
-            c.key_symbols.forEach(k => h += '<li>' + esc(k) + '</li>');
-            h += '</ul>';
-          }
-          h += '</div>';
-        });
-      }
-      if (ov.how_to_explore && ov.how_to_explore.length) {
-        h += '<h4>Where to start reading</h4><ul>';
-        ov.how_to_explore.forEach(s => h += '<li>' + esc(s) + '</li>');
-        h += '</ul>';
-      }
-      const st = ov.stats || {};
-      h += '<p style="color:#8b949e;font-size:13px">' + st.nodes + ' nodes · ' +
-           st.edges + ' relationships · ' + st.files + ' files · ' +
-           JSON.stringify(st.by_type || {}) + '</p>';
-      h += '<p style="color:#8b949e;font-size:13px">Now switch to the ' +
-           '<b>Ask</b> tab — the Run ID is already filled in.</p>';
-      const out = document.getElementById('analyse-result');
-      out.innerHTML = h; out.classList.add('visible');
-    }
-
-    async function askQuestion() {
-      const question = document.getElementById('question').value.trim();
-      const run_id = document.getElementById('ask-run-id').value.trim();
-      const user_id = document.getElementById('ask-user-id').value || 'demo';
-      const k = parseInt(document.getElementById('k').value) || 8;
-
-      if (!question) { alert('Enter a question'); return; }
-      if (!run_id) { alert('Enter a Run ID from the Analyse step'); return; }
-
-      document.getElementById('ask-spinner').classList.add('visible');
-      document.getElementById('answer-box').classList.remove('visible');
-
-      try {
-        const resp = await fetch('/ask', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ question, user_id, run_id, k })
-        });
-        const data = await resp.json();
-
-        const badge = document.getElementById('grounded-badge');
-        badge.innerHTML = data.grounded
-          ? '<span class="grounded-yes">✓ GROUNDED</span>'
-          : '<span class="grounded-no">✗ NOT GROUNDED</span>';
-
-        document.getElementById('answer-text').textContent = data.answer || '';
-
-        const citsEl = document.getElementById('citations');
-        citsEl.innerHTML = '';
-        if (data.citations && data.citations.length > 0) {
-          citsEl.innerHTML = '<div style="margin-top:12px; font-size:0.8rem; color:#8b949e; font-weight:600">Citations:</div>';
-          data.citations.forEach(c => {
-            const d = document.createElement('div');
-            d.className = 'citation';
-            d.textContent = `${c.node_id} — ${c.path}:${c.line_start || '?'}-${c.line_end || '?'}`;
-            citsEl.appendChild(d);
-          });
-        }
-
-        document.getElementById('answer-box').classList.add('visible');
-      } catch (e) {
-        document.getElementById('answer-box').innerHTML = 'Error: ' + e.message;
-        document.getElementById('answer-box').classList.add('visible');
-      } finally {
-        document.getElementById('ask-spinner').classList.remove('visible');
-      }
-    }
-  </script>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
+    # Read per request so a redeploy never serves a stale page from memory.
+    page = _WEB_DIR / "index.html"
+    if not page.exists():
+        return HTMLResponse("<h1>Code Analyser</h1><p>UI file missing.</p>", status_code=500)
+    return HTMLResponse(page.read_text(encoding="utf-8"))
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "code-analyser"}
+    provider = os.getenv("LLM_PROVIDER", "watsonx").lower()
+    model = {
+        "groq": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
+        "watsonx": os.getenv("WATSONX_MODEL_ID", "ibm/granite-3-8b-instruct"),
+        "openai": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+    }.get(provider, provider)
+    return {"status": "ok", "service": "code-analyser",
+            "llm_provider": provider, "model": model,
+            "store": os.getenv("STORE_TYPE", "neo4j")}
 
 
 @app.post("/analyse")
@@ -697,124 +230,174 @@ async def graph(run_id: str, user_id: str = "demo"):
 
 def _collect_graph(user_id: str, run_id: str):
     store = _get_store()
-    nodes = store.query_nodes(user_id, run_id, limit=500)
-    if hasattr(store, "_edges"):
-        edges = [
-            e for e in store._edges
-            if e.get("user_id") == user_id and e.get("run_id") == run_id
-        ]
-    else:
-        edges = []
-    return nodes, edges
+    if hasattr(store, "query_all"):
+        return store.query_all(user_id, run_id)
+    return store.query_nodes(user_id, run_id, limit=500), []
+
+
+# One overview per run: it reads the whole graph, so it is worth reusing.
+_overviews: Dict[str, Dict[str, Any]] = {}
+
+_OVERVIEW_CODE = """You are Code Analyser, an onboarding assistant. A developer has just \
+joined this project and must become productive in the codebase quickly, without \
+reading every file. Using ONLY the graph below, which was extracted from the \
+repository, write the briefing they need. Nodes have an [id], type, name, location \
+and description; RELATIONSHIPS show who CALLS, IMPORTS, READS, WRITES or CONTAINS whom.
+
+Return ONE json object with exactly these keys:
+{
+  "title": "what this project is, in 3-8 words",
+  "summary": "What the project is, what problem it solves and who uses it. 3-5 plain sentences.",
+  "architecture": "How it is organised: the main layers or modules and how they depend on each other. 2-4 sentences.",
+  "flow": [{"step": "what happens at this point, in plain language", "where": "path::symbol"}],
+  "components": [{"file": "path", "role": "what this file is responsible for",
+                  "key_symbols": [{"name": "symbol", "does": "what it does",
+                                   "inputs": "what it takes", "outputs": "what it returns or changes"}]}],
+  "key_concepts": [{"term": "a project-specific name or idea", "meaning": "what it means here"}],
+  "data": ["what data the project holds or passes around, and where it lives"],
+  "entry_points": [{"where": "path::symbol", "why": "how execution or usage starts here"}],
+  "extend": [{"task": "a realistic change a newcomer might be asked to make",
+              "where": "path::symbol to change", "impact": "what else that touches"}],
+  "reading_order": [{"target": "path", "why": "why read it at this point"}],
+  "gotchas": ["surprising behaviour, hidden coupling or missing pieces a newcomer should know"],
+  "suggested_questions": ["questions a newcomer should ask next, naming real functions"]
+}
+
+Rules:
+- Name only files and symbols that appear in the graph. Never invent anything.
+- flow: 4-10 steps that follow the RELATIONSHIPS from an entry point to where the work
+  is done. Walk the edges; do not simply list files.
+- components: most important file first, at most 8 files and 5 symbols each.
+- extend: 3-5 entries based on where the graph shows the code is built to grow.
+- key_concepts at most 8, reading_order at most 6, gotchas at most 5,
+  suggested_questions exactly 4.
+- Write for someone who has never seen the project: plain words, short sentences."""
+
+_OVERVIEW_DOCS = """You are Code Analyser, an onboarding assistant. Someone has been \
+handed these documents and must understand them quickly without reading them end to \
+end. Using ONLY the graph below, which was extracted from the documents, write the \
+briefing they need. Nodes have an [id], type, name, location and description; \
+RELATIONSHIPS show how sections, concepts and entities connect.
+
+Return ONE json object with exactly these keys:
+{
+  "title": "what these documents are, in 3-8 words",
+  "summary": "What the documents cover, why they exist and who they are for. 3-5 plain sentences.",
+  "architecture": "How the material is organised and how the documents relate. 2-4 sentences.",
+  "flow": [{"step": "a main point, in the order it is presented", "where": "document#section"}],
+  "components": [{"file": "document", "role": "what this document is for",
+                  "key_symbols": [{"name": "topic or section", "does": "what it says"}]}],
+  "key_concepts": [{"term": "a defined term, role or idea", "meaning": "what it means here"}],
+  "data": ["key facts, figures, dates, obligations or rules"],
+  "entry_points": [{"where": "document#section", "why": "why start reading here"}],
+  "extend": [{"task": "a situation where a reader would need to act on this material",
+              "where": "document#section to consult", "impact": "what else in the material it affects"}],
+  "reading_order": [{"target": "document", "why": "why read it at this point"}],
+  "gotchas": ["exceptions, conditions, contradictions or gaps a reader could miss"],
+  "suggested_questions": ["questions a reader should ask next about this material"]
+}
+
+Rules:
+- Name only documents, sections and terms that appear in the graph. Never invent.
+- flow 4-10 items, components at most 8, key_concepts at most 8, extend 3-5,
+  reading_order at most 6, gotchas at most 5, suggested_questions exactly 4.
+- Plain words, short sentences."""
+
+
+def _as_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
 
 
 @app.get("/overview/{run_id}")
-async def overview(run_id: str, user_id: str = "demo"):
-    """A written walkthrough of whatever was just analysed, built from the
-    whole graph rather than a retrieved slice."""
+def overview(run_id: str, user_id: str = "demo", refresh: bool = False):
+    """An onboarding briefing built from the whole graph, not a retrieved slice."""
+    from code_analyser import config
+    from code_analyser.graph_context import looks_like_code, render_context
+    from code_analyser.llm.factory import get_client
+    from code_analyser.llm.protocol import LLMFormatError
+
+    key = f"{user_id}|{run_id}"
+    if key in _overviews and not refresh:
+        return _overviews[key]
+
     nodes, edges = _collect_graph(user_id, run_id)
     if not nodes:
         raise HTTPException(status_code=404, detail="No graph for this run")
 
-    by_id = {n["id"]: n for n in nodes}
-    kinds = {}
-    for n in nodes:
-        kinds.setdefault(n.get("type", "?"), []).append(n)
-
-    by_file: Dict[str, List[Dict[str, Any]]] = {}
-    for n in nodes:
-        by_file.setdefault(n.get("path") or "(no file)", []).append(n)
-
-    lines = []
-    for path, members in sorted(by_file.items()):
-        lines.append(f"FILE {path}")
-        for m in sorted(members, key=lambda x: x.get("line_start") or 0):
-            sig = (m.get("props") or {}).get("signature") if isinstance(m.get("props"), dict) else None
-            lines.append(
-                f"  - [{m.get('type')}] {m.get('name')}"
-                f"{' ' + sig if sig else ''}"
-                f" (lines {m.get('line_start')}-{m.get('line_end')}): {m.get('description')}"
-            )
-    for e in edges:
-        s = by_id.get(e.get("source_id"), {}).get("name")
-        t = by_id.get(e.get("target_id"), {}).get("name")
-        if s and t:
-            lines.append(f"EDGE {s} -{e.get('type')}-> {t}: {e.get('description') or ''}")
-
-    is_code = any(
-        n.get("type") in {"Function", "Method", "Class", "Module"} for n in nodes
+    is_code = looks_like_code(nodes)
+    context, shown = render_context(
+        nodes, edges, config.OVERVIEW_CONTEXT_CHARS, group_by_file=True
     )
-    if is_code:
-        system = (
-            "You explain unfamiliar codebases to a new engineer. Using ONLY the "
-            "graph below, write json with these keys:\n"
-            '{"summary": "3-4 sentences on what this project is and does",\n'
-            ' "flow": ["ordered steps describing how control moves through the '
-            'system, naming the real functions and files"],\n'
-            ' "components": [{"file": "path", "role": "what this file is for", '
-            '"key_symbols": ["name — what it does"]}],\n'
-            ' "entry_points": ["where execution starts"],\n'
-            ' "how_to_explore": ["what a newcomer should read first, and why"]}\n'
-            "Name only files and symbols that appear in the graph. Never invent."
-        )
-    else:
-        system = (
-            "You explain documents to someone who has not read them. Using ONLY "
-            "the graph below, write json with these keys:\n"
-            '{"summary": "3-4 sentences on what these documents cover",\n'
-            ' "flow": ["the main points in the order they are presented"],\n'
-            ' "components": [{"file": "path", "role": "what this document covers", '
-            '"key_symbols": ["topic — what it says"]}],\n'
-            ' "entry_points": ["which document to read first"],\n'
-            ' "how_to_explore": ["what to read next, and why"]}\n'
-            "Name only documents and topics present in the graph. Never invent."
-        )
+    system = _OVERVIEW_CODE if is_code else _OVERVIEW_DOCS
+    user = "GRAPH:\n" + context
 
-    from code_analyser.llm.factory import get_client
-    try:
-        raw, _ = get_client().complete_json(
-            system, "GRAPH:\n" + "\n".join(lines)[:14000], max_tokens=2000
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Overview failed: {e}")
+    client = get_client()
+    raw = None
+    for extra in ("", "\n\nBe concise: at most 4 items in every list, under 25 words per item."):
+        try:
+            raw, _ = client.complete_json(system + extra, user,
+                                          max_tokens=config.OVERVIEW_MAX_TOKENS)
+            break
+        except LLMFormatError:
+            continue  # usually a reply cut off at the token limit; ask for less
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Overview failed: {e}")
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=502, detail="The model did not return a usable overview")
 
-    raw["kind"] = "codebase" if is_code else "documents"
-    raw["stats"] = {
-        "nodes": len(nodes),
-        "edges": len(edges),
-        "files": len([p for p in by_file if p != "(no file)"]),
-        "by_type": {k: len(v) for k, v in sorted(kinds.items())},
+    result: Dict[str, Any] = {
+        "title": str(raw.get("title") or ""),
+        "summary": str(raw.get("summary") or ""),
+        "architecture": str(raw.get("architecture") or ""),
     }
-    return raw
+    for k in ("flow", "components", "key_concepts", "data", "entry_points",
+              "extend", "reading_order", "gotchas", "suggested_questions"):
+        result[k] = _as_list(raw.get(k))
+
+    files = {n.get("path") for n in nodes if n.get("path")}
+    by_type: Dict[str, int] = {}
+    for n in nodes:
+        by_type[n.get("type", "?")] = by_type.get(n.get("type", "?"), 0) + 1
+    result["kind"] = "codebase" if is_code else "documents"
+    result["stats"] = {"nodes": len(nodes), "edges": len(edges),
+                       "files": len(files), "by_type": by_type}
+    # Tells the reader when a large graph had to be trimmed to fit the model.
+    result["coverage"] = {"nodes_shown": len(shown), "nodes_total": len(nodes)}
+    _overviews[key] = result
+    return result
 
 
 @app.get("/symbols/{run_id}")
 async def symbols(run_id: str, user_id: str = "demo", name: Optional[str] = None):
-    """Every function/class in the graph, with what calls it and what it calls.
-    Answers "list all functions and their calls" exactly, without an LLM."""
+    """Every function and class with its signature, callers and callees, read
+    straight from the graph with no LLM call."""
+    from code_analyser.graph_context import CODE_TYPES, node_props
+
     nodes, edges = _collect_graph(user_id, run_id)
     if not nodes:
         raise HTTPException(status_code=404, detail="No graph for this run")
     by_id = {n["id"]: n for n in nodes}
 
-    wanted = {"Function", "Method", "Class", "Module"}
     out = []
     for n in nodes:
-        if n.get("type") not in wanted:
+        if n.get("type") not in CODE_TYPES:
             continue
         if name and name.lower() not in (n.get("name") or "").lower():
             continue
         calls, called_by = [], []
         for e in edges:
             src, tgt = by_id.get(e.get("source_id")), by_id.get(e.get("target_id"))
-            if e.get("source_id") == n["id"] and tgt:
-                calls.append({"name": tgt.get("name"), "type": e.get("type"),
-                              "path": tgt.get("path")})
-            if e.get("target_id") == n["id"] and src:
-                called_by.append({"name": src.get("name"), "type": e.get("type"),
-                                  "path": src.get("path")})
-        props = n.get("props") if isinstance(n.get("props"), dict) else {}
+            if e.get("source_id") == n["id"] and tgt and e.get("type") != "CONTAINS":
+                calls.append({"id": tgt["id"], "name": tgt.get("name"),
+                              "type": e.get("type"), "path": tgt.get("path")})
+            if e.get("target_id") == n["id"] and src and e.get("type") != "CONTAINS":
+                called_by.append({"id": src["id"], "name": src.get("name"),
+                                  "type": e.get("type"), "path": src.get("path")})
+        props = node_props(n)
         out.append({
+            "id": n["id"],
             "name": n.get("name"),
             "type": n.get("type"),
             "path": n.get("path"),
@@ -831,12 +414,13 @@ async def symbols(run_id: str, user_id: str = "demo", name: Optional[str] = None
 
 
 @app.post("/ask")
-async def ask(req: AskRequest):
-    """Ask a question about an analysed codebase."""
+def ask(req: AskRequest):
+    """Ask about an analysed codebase. Plain def: the LLM call blocks, and FastAPI
+    runs sync handlers in a thread pool so polling stays responsive meanwhile."""
     try:
         orch = _get_orchestrator()
-        result = orch.ask(req.question, user_id=req.user_id, run_id=req.run_id, k=req.k)
-        return result
+        return orch.ask(req.question, user_id=req.user_id, run_id=req.run_id,
+                        k=req.k, history=req.history)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

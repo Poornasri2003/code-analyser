@@ -30,3 +30,11 @@ PLANNER_MAX_FILES: int = 15
 # How many paths the planner may see before routing. Larger than MAX_FILES so
 # priorities are chosen across the whole tree, not an alphabetical slice.
 PLANNER_MANIFEST_LIMIT: int = int(os.getenv("ANALYSER_PLANNER_MANIFEST_LIMIT", "300"))
+
+# Graph text sent with a question or an overview request, plus the reply budget.
+# Prompt and reply together must fit the provider's per-request token cap;
+# these defaults keep a request under Groq's 8000-token free tier.
+ANSWER_CONTEXT_CHARS: int = int(os.getenv("ANALYSER_ANSWER_CONTEXT_CHARS", "8000"))
+ANSWER_MAX_TOKENS: int = int(os.getenv("ANALYSER_ANSWER_MAX_TOKENS", "2000"))
+OVERVIEW_CONTEXT_CHARS: int = int(os.getenv("ANALYSER_OVERVIEW_CONTEXT_CHARS", "8000"))
+OVERVIEW_MAX_TOKENS: int = int(os.getenv("ANALYSER_OVERVIEW_MAX_TOKENS", "2800"))

@@ -48,3 +48,4 @@ workdirs/
 # local scratch from test runs
 _wt/
 _worktmp/
+ui_mockup.html

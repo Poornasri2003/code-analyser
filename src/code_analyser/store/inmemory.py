@@ -110,6 +110,17 @@ class InMemoryStore:
     def upsert_node(self, node: Dict[str, Any]) -> None:
         self._nodes[node["id"]] = node
 
+    def query_all(
+        self, user_id: str, run_id: str, *, limit: int = 500
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """The whole graph for one run: every node and every edge."""
+        nodes = self.query_nodes(user_id, run_id, limit=limit)
+        edges = [
+            e for e in self._edges
+            if e.get("user_id") == user_id and e.get("run_id") == run_id
+        ]
+        return nodes, edges
+
     def query_nodes(self, user_id: str, run_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
         return [
             n for n in self._nodes.values()
