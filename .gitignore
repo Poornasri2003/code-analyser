@@ -44,3 +44,7 @@ workdirs/
 # Logs and temp
 *.log
 *.tmp
+
+# local scratch from test runs
+_wt/
+_worktmp/
