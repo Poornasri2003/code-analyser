@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-analyser"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "Unstructured code in, structured knowledge graph out."
+license = {text = "MIT"}
+dependencies = [
+    "pydantic>=2.7",
+    "neo4j>=5.20",
+    "sentence-transformers>=3.0",
+    "ibm-watsonx-ai>=1.1",
+    "gitpython>=3.1",
+    "click>=8.1",
+    "python-dotenv>=1.0",
+    "httpx>=0.27",
+    "tqdm>=4.66",
+    "rich>=13.7",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov", "ruff"]
+
+[project.scripts]
+analyser = "code_analyser.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
