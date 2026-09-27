@@ -26,17 +26,29 @@ app.add_middleware(
 # In-memory job store for demo
 _jobs: Dict[str, Dict[str, Any]] = {}
 
+MAX_UPLOAD_BYTES = int(os.getenv("ANALYSER_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+
+
+_store = None
+
+
+def _get_store():
+    # The in-memory store holds the graph in the instance itself, so a fresh
+    # one per request would lose everything /analyse just wrote.
+    global _store
+    if _store is None:
+        from code_analyser.store.factory import get_store
+        _store = get_store(os.getenv("STORE_TYPE", "neo4j"))
+    return _store
+
 
 def _get_orchestrator():
     from code_analyser.llm.factory import get_client
     from code_analyser.orchestrator import Orchestrator
 
-    store_type = os.getenv("STORE_TYPE", "neo4j")
-    from code_analyser.store.factory import get_store
-    store = get_store(store_type)
     client = get_client()
     workdir = Path(os.getenv("ANALYSER_WORKDIR", "/tmp/code_analyser_work"))
-    return Orchestrator(client=client, store=store, workdir=workdir)
+    return Orchestrator(client=client, store=_get_store(), workdir=workdir)
 
 
 class AnalyseRequest(BaseModel):
@@ -338,6 +350,52 @@ async def analyse(req: AnalyseRequest, background_tasks: BackgroundTasks):
     t.start()
 
     return {"job_id": job_id, "run_id": run_id, "status": "running"}
+
+
+@app.post("/analyse-upload")
+async def analyse_upload(
+    file: UploadFile = File(...),
+    user_id: str = Form("demo"),
+    max_files: Optional[int] = Form(None),
+):
+    """Analyse an uploaded .zip. A local path means nothing to a remote server,
+    so uploads are the only way to analyse a non-public codebase."""
+    import threading
+    import tempfile
+
+    if not (file.filename or "").lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Only .zip uploads are supported")
+
+    upload_root = Path(tempfile.mkdtemp(prefix="ca_upload_"))
+    saved = upload_root / "upload.zip"
+    size = 0
+    with saved.open("wb") as fh:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Upload exceeds {MAX_UPLOAD_BYTES // (1024*1024)}MB limit",
+                )
+            fh.write(chunk)
+
+    run_id = str(uuid.uuid4())[:8]
+    _jobs[run_id] = {"status": "running", "run_id": run_id, "report": None, "error": None}
+
+    def _run():
+        try:
+            orch = _get_orchestrator()
+            report = orch.analyse(
+                str(saved), user_id=user_id, run_id=run_id, max_files=max_files
+            )
+            _jobs[run_id]["status"] = "done"
+            _jobs[run_id]["report"] = report.model_dump()
+        except Exception as e:
+            _jobs[run_id]["status"] = "error"
+            _jobs[run_id]["error"] = str(e)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"job_id": run_id, "run_id": run_id, "status": "running"}
 
 
 @app.get("/jobs/{job_id}")
