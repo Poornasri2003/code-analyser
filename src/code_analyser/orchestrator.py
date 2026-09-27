@@ -70,12 +70,21 @@ class Orchestrator:
     ) -> None:
         self.client = client
         self.store = store
+        self.trace = None  # optional TraceLog; set by callers that want tracing
         self.workdir = workdir or Path("/tmp/code_analyser_workdir")
         if embed_fn is None:
             from code_analyser.tools.embed import embed
             self.embed_fn = embed
         else:
             self.embed_fn = embed_fn
+
+    def _stage(self, name: str, event: str = "start", **detail):
+        """Record a pipeline step and tell the wrapped client which stage its
+        next call belongs to."""
+        if self.trace is not None:
+            self.trace.add(name, event, **detail)
+        if hasattr(self.client, "stage"):
+            self.client.stage = name
 
     def analyse(
         self,
@@ -91,8 +100,10 @@ class Orchestrator:
         report = RunReport(run_id=run_id, user_id=user_id, source=source)
 
         # ── 1. Resolve source ─────────────────────────────────────────────────
+        self._stage("resolve", "start", source=source)
         self.workdir.mkdir(parents=True, exist_ok=True)
         root = resolve_source(source, self.workdir)
+        self._stage("resolve", "done", root=str(root))
 
         # ── 2. Walk files ─────────────────────────────────────────────────────
         # The planner sees the whole tree, because truncating here would hand it
@@ -101,12 +112,14 @@ class Orchestrator:
         relpaths = walk_files(root)[:config.PLANNER_MANIFEST_LIMIT]
         manifest = _build_manifest(root, relpaths)
         report.files_total = len(manifest)
+        self._stage("walk", "done", files_found=len(manifest))
 
         if not manifest:
             report.elapsed_seconds = time.time() - t0
             return report
 
         # ── 3. Planner ────────────────────────────────────────────────────────
+        self._stage("planner", "start", files=len(manifest))
         plan = self._retry_agent(
             lambda: run_planner(root, manifest, self.client),
             "planner",
@@ -126,6 +139,10 @@ class Orchestrator:
         report.files_skipped += len(plan.routes) - len(analysable)
         sorted_routes = analysable[:max_files]
         report.files_skipped += len(analysable) - len(sorted_routes)
+        self._stage("planner", "done", kind=plan.kind,
+                    selected=[r.path for r in sorted_routes],
+                    skipped=len(plan.routes) - len(sorted_routes),
+                    reasoning=(plan.reasoning or "")[:300])
 
         # ── 4. Extract file by file ───────────────────────────────────────────
         staged_nodes: List[GraphNode] = []
@@ -146,9 +163,14 @@ class Orchestrator:
             else:
                 agent_fn = lambda: run_doc_agent(root, relpath, self.client)
 
+            self._stage(f"extract:{relpath}", "start",
+                        file=relpath, route=route.route,
+                        index=report.files_processed + report.files_failed + 1,
+                        of=len(sorted_routes))
             raw_output = self._retry_agent(agent_fn, relpath, report)
             if raw_output is None:
                 report.files_failed += 1
+                self._stage(f"extract:{relpath}", "failed", file=relpath)
                 continue
 
             # validate
@@ -159,6 +181,9 @@ class Orchestrator:
             staged_nodes.extend(clean.nodes)
             staged_edges.extend(clean.relationships)
             report.files_processed += 1
+            self._stage(f"extract:{relpath}", "done", file=relpath,
+                        nodes=len(clean.nodes), relationships=len(clean.relationships),
+                        dropped={k: v for k, v in drop_report.items() if v})
 
         report.nodes_dropped = sum(
             v for k, v in total_drops.items() if "node" in k
@@ -170,6 +195,8 @@ class Orchestrator:
         staged_batch = ExtractorOutput(nodes=staged_nodes, relationships=staged_edges)
 
         # ── 5. Linker ─────────────────────────────────────────────────────────
+        self._stage("linker", "start", staged_nodes=len(staged_nodes),
+                    staged_edges=len(staged_edges))
         linker_output = self._retry_agent(
             lambda: run_linker(staged_batch, self.client, root),
             "linker",
@@ -177,12 +204,17 @@ class Orchestrator:
         )
         if linker_output is not None:
             staged_batch = apply_linker_output(staged_batch, linker_output)
+            self._stage("linker", "done",
+                        resolved=len(getattr(linker_output, "resolved", []) or []),
+                        merges=len(getattr(linker_output, "merges", []) or []),
+                        dropped=len(getattr(linker_output, "dropped", []) or []))
 
         # ── 6. Assign ids ─────────────────────────────────────────────────────
         stored_nodes, stored_edges = assign_ids(staged_batch, user_id, run_id)
 
         # ── 7. Embed ──────────────────────────────────────────────────────────
         texts = [f"{n.name}: {n.description}" for n in stored_nodes]
+        self._stage("embed", "start", vectors=len(texts))
         if texts:
             vectors = self.embed_fn(texts)
             for node, vec in zip(stored_nodes, vectors):
@@ -193,8 +225,11 @@ class Orchestrator:
         nc, ec = self.store.write(stored_nodes, stored_edges, user_id, run_id)
         report.nodes_written = nc
         report.edges_written = ec
+        self._stage("store", "done", nodes=nc, edges=ec)
 
         report.elapsed_seconds = time.time() - t0
+        if self.trace is not None:
+            report.tokens_used = self.trace.total_tokens
         return report
 
     def ask(

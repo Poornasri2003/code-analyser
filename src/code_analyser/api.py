@@ -42,13 +42,18 @@ def _get_store():
     return _store
 
 
-def _get_orchestrator():
+def _get_orchestrator(trace=None):
     from code_analyser.llm.factory import get_client
     from code_analyser.orchestrator import Orchestrator
+    from code_analyser.trace import TracingLLMClient
 
     client = get_client()
+    if trace is not None:
+        client = TracingLLMClient(client, trace)
     workdir = Path(os.getenv("ANALYSER_WORKDIR", "/tmp/code_analyser_work"))
-    return Orchestrator(client=client, store=_get_store(), workdir=workdir)
+    orch = Orchestrator(client=client, store=_get_store(), workdir=workdir)
+    orch.trace = trace
+    return orch
 
 
 class AnalyseRequest(BaseModel):
@@ -164,6 +169,8 @@ async def index():
         <button onclick="analyse()">Analyse →</button>
         <div class="spinner" id="analyse-spinner"></div>
         <div class="result" id="analyse-result"></div>
+        <div class="card" id="graph-box" style="display:none;margin-top:16px"></div>
+        <div class="card" id="trace-box" style="display:none;margin-top:16px"></div>
         <div id="run-id-holder" style="display:none">
           Run ID: <span class="run-id-display" id="run-id-value"></span>
           <br/><small style="color:#8b949e">Copy this to use in the Ask tab</small>
@@ -275,12 +282,14 @@ GET /health                 # health check
         document.getElementById('run-id-holder').style.display = 'block';
         document.getElementById('ask-run-id').value = data.run_id;
 
-        // The run happens in the background, so poll until it finishes.
-        let report = null;
-        for (let i = 0; i < 400; i++) {
-          show('Reading files and building the graph… (' + (i * 3) + 's)');
-          await new Promise(r => setTimeout(r, 3000));
+        // Poll until the run finishes, showing the trace as it arrives
+        // instead of an opaque spinner.
+        let report = null, lastJob = null;
+        for (let i = 0; i < 500; i++) {
+          await new Promise(r => setTimeout(r, 2500));
           const s = await (await fetch('/jobs/' + job)).json();
+          lastJob = s;
+          renderProgress(s, i * 2.5);
           if (s.status === 'error') throw new Error(s.error);
           if (s.status === 'done') { report = s.report; break; }
         }
@@ -293,6 +302,8 @@ GET /health                 # health check
         const ov = await (await fetch('/overview/' + data.run_id +
                                       '?user_id=' + encodeURIComponent(user_id))).json();
         renderOverview(ov, report);
+        renderTrace(lastJob);
+        loadGraph(data.run_id, user_id);
       } catch (e) {
         show('<span style="color:#f85149">Error: ' + e.message + '</span>');
       } finally {
@@ -300,9 +311,159 @@ GET /health                 # health check
       }
     }
 
+
+    const STAGE_LABEL = {
+      resolve: 'Fetching the source',
+      walk: 'Listing files',
+      planner: 'Planner deciding what to read',
+      linker: 'Linker connecting files',
+      embed: 'Building embeddings',
+      store: 'Writing the graph'
+    };
+
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function renderProgress(s, secs) {
+      const ev = s.trace || [];
+      const cur = s.current || 'starting';
+      const label = STAGE_LABEL[cur] ||
+        (cur.indexOf('extract:') === 0 ? 'Reading ' + cur.slice(8) : cur);
+      const sum = s.trace_summary || {};
+      let h = '<div style="font-weight:600;color:#58a6ff">' + esc(label) +
+              ' <span style="color:#8b949e;font-weight:400">&middot; ' +
+              Math.round(secs) + 's</span></div>';
+      h += '<div style="color:#8b949e;font-size:13px;margin:4px 0 10px">' +
+           (sum.llm_calls || 0) + ' LLM calls &middot; ' +
+           (sum.total_tokens || 0) + ' tokens</div>';
+      h += '<div style="max-height:220px;overflow:auto;font-family:ui-monospace,monospace;font-size:12px">';
+      ev.slice(-14).forEach(function (e) {
+        let line = '<span style="color:#8b949e">' + e.at + 's</span> ' + esc(e.stage);
+        if (e.event === 'llm_call') {
+          if (e.ok) {
+            line += ' <span style="color:#3fb950">LLM ok</span> ' +
+                    (e.tokens || 0) + ' tok, ' + e.seconds + 's' +
+                    (e.nodes ? ', ' + e.nodes + ' nodes' : '');
+          } else {
+            line += ' <span style="color:#f85149">LLM failed</span> ' +
+                    esc((e.error || '').slice(0, 90));
+          }
+        } else {
+          line += ' <span style="color:#8b949e">' + esc(e.event) + '</span>';
+          if (e.files_found != null) line += ' ' + e.files_found + ' files';
+        }
+        h += '<div>' + line + '</div>';
+      });
+      h += '</div>';
+      const out = document.getElementById('analyse-result');
+      out.innerHTML = h;
+      out.classList.add('visible');
+    }
+
+    function renderTrace(job) {
+      const box = document.getElementById('trace-box');
+      if (!box || !job || !job.trace) return;
+      const sum = job.trace_summary || {};
+      let h = '<h3>What actually happened</h3>';
+      h += '<p style="color:#8b949e">' + (sum.llm_calls || 0) + ' LLM calls &middot; ' +
+           (sum.total_tokens || 0) + ' tokens total</p>';
+      h += '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+           '<tr style="color:#8b949e;text-align:left">' +
+           '<th>at</th><th>stage</th><th>event</th><th>tokens</th><th>secs</th><th>result</th></tr>';
+      job.trace.forEach(function (e) {
+        let res = '';
+        if (e.event === 'llm_call') {
+          res = e.ok ? ((e.nodes || 0) + ' nodes, ' + (e.relationships || 0) + ' rels')
+                     : '<span style="color:#f85149">' + esc((e.error || '').slice(0, 70)) + '</span>';
+        } else if (e.selected) {
+          res = e.selected.length + ' files chosen';
+        } else if (e.files_found != null) {
+          res = e.files_found + ' files';
+        } else if (e.nodes != null) {
+          res = e.nodes + ' nodes';
+        }
+        h += '<tr style="border-top:1px solid #21262d">' +
+             '<td>' + e.at + 's</td><td>' + esc(e.stage) + '</td><td>' + esc(e.event) +
+             '</td><td>' + (e.tokens || '') + '</td><td>' + (e.seconds || '') +
+             '</td><td>' + res + '</td></tr>';
+      });
+      h += '</table>';
+      box.innerHTML = h;
+      box.style.display = 'block';
+    }
+
+    async function loadGraph(run_id, user_id) {
+      const box = document.getElementById('graph-box');
+      if (!box) return;
+      try {
+        const resp = await fetch('/graph/' + run_id + '?user_id=' + encodeURIComponent(user_id));
+        const g = await resp.json();
+        if (!g.nodes) { box.style.display = 'none'; return; }
+        drawGraph(g);
+        box.style.display = 'block';
+      } catch (e) {
+        box.style.display = 'none';
+      }
+    }
+
+    const TYPE_COLOR = {
+      File: '#58a6ff', Module: '#79c0ff', Class: '#d2a8ff', Function: '#3fb950',
+      Method: '#56d364', Document: '#f0883e', Section: '#ffa657',
+      Concept: '#e3b341', Entity: '#db6d28', Config: '#a5d6ff', Repo: '#8b949e'
+    };
+
+    function drawGraph(g) {
+      const W = 860, H = 460, cx = W / 2, cy = H / 2;
+      const n = g.nodes.length;
+      const pos = {};
+      // Ring layout: deterministic and readable, no physics needed.
+      g.nodes.forEach(function (nd, i) {
+        const a = (2 * Math.PI * i) / Math.max(n, 1) - Math.PI / 2;
+        const r = n <= 12 ? 165 : 195;
+        pos[nd.id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a), nd: nd };
+      });
+      let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto">';
+      svg += '<defs><marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">' +
+             '<path d="M0,0 L0,6 L9,3 z" fill="#484f58"></path></marker></defs>';
+      g.edges.forEach(function (e) {
+        const a = pos[e.source], b = pos[e.target];
+        if (!a || !b) return;
+        svg += '<line x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) +
+               '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) +
+               '" stroke="#30363d" stroke-width="1.2" marker-end="url(#ar)">' +
+               '<title>' + esc(e.type) + ': ' + esc(e.description) + '</title></line>';
+      });
+      Object.keys(pos).forEach(function (k) {
+        const p = pos[k];
+        const c = TYPE_COLOR[p.nd.type] || '#8b949e';
+        svg += '<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) +
+               '" r="9" fill="' + c + '" opacity="0.9">' +
+               '<title>' + esc(p.nd.type) + ' ' + esc(p.nd.name) + ' | ' +
+               esc(p.nd.path || '') + ' | ' + esc(p.nd.description || '') + '</title></circle>';
+        const anchor = p.x > cx ? 'start' : 'end';
+        const dx = p.x > cx ? 13 : -13;
+        svg += '<text x="' + (p.x + dx).toFixed(1) + '" y="' + (p.y + 4).toFixed(1) +
+               '" fill="#c9d1d9" font-size="11" text-anchor="' + anchor + '">' +
+               esc((p.nd.name || '').slice(0, 22)) + '</text>';
+      });
+      svg += '</svg>';
+      const legend = Object.keys(TYPE_COLOR)
+        .filter(function (k) { return g.nodes.some(function (x) { return x.type === k; }); })
+        .map(function (k) {
+          return '<span style="margin-right:12px"><span style="display:inline-block;width:9px;' +
+                 'height:9px;border-radius:50%;background:' + TYPE_COLOR[k] +
+                 ';margin-right:4px"></span>' + k + '</span>';
+        }).join('');
+      document.getElementById('graph-box').innerHTML =
+        '<h3>The graph</h3><div style="color:#8b949e;font-size:13px;margin-bottom:8px">' +
+        g.nodes.length + ' nodes &middot; ' + g.edges.length +
+        ' relationships &middot; hover any node or arrow for detail</div>' + svg +
+        '<div style="margin-top:8px;font-size:12px;color:#8b949e">' + legend + '</div>';
+    }
+
     function renderOverview(ov, report) {
-      const esc = s => String(s == null ? '' : s)
-        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       let h = '<h3 style="margin-top:0">' +
               (ov.kind === 'codebase' ? 'Codebase explained' : 'Documents explained') +
               '</h3>';
@@ -410,11 +571,14 @@ async def analyse(req: AnalyseRequest, background_tasks: BackgroundTasks):
     run_id = req.run_id or str(uuid.uuid4())[:8]
     job_id = run_id
 
-    _jobs[job_id] = {"status": "running", "run_id": run_id, "report": None, "error": None}
+    from code_analyser.trace import TraceLog
+    trace = TraceLog()
+    _jobs[job_id] = {"status": "running", "run_id": run_id, "report": None,
+                     "error": None, "_trace": trace}
 
     def _run():
         try:
-            orch = _get_orchestrator()
+            orch = _get_orchestrator(trace)
             report = orch.analyse(
                 req.source,
                 user_id=req.user_id,
@@ -461,11 +625,14 @@ async def analyse_upload(
             fh.write(chunk)
 
     run_id = str(uuid.uuid4())[:8]
-    _jobs[run_id] = {"status": "running", "run_id": run_id, "report": None, "error": None}
+    from code_analyser.trace import TraceLog
+    trace = TraceLog()
+    _jobs[run_id] = {"status": "running", "run_id": run_id, "report": None,
+                     "error": None, "_trace": trace}
 
     def _run():
         try:
-            orch = _get_orchestrator()
+            orch = _get_orchestrator(trace)
             report = orch.analyse(
                 str(saved), user_id=user_id, run_id=run_id, max_files=max_files
             )
@@ -483,7 +650,49 @@ async def analyse_upload(
 async def get_job(job_id: str):
     if job_id not in _jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    return _jobs[job_id]
+    job = _jobs[job_id]
+    trace = job.get("_trace")
+    out = {k: v for k, v in job.items() if not k.startswith("_")}
+    if trace is not None:
+        # Live: the UI polls this while the run is still going.
+        out["trace"] = trace.events
+        out["trace_summary"] = trace.summary()
+        last = trace.events[-1] if trace.events else None
+        out["current"] = last["stage"] if last else "starting"
+    return out
+
+
+@app.get("/trace/{job_id}")
+async def get_trace(job_id: str):
+    if job_id not in _jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    trace = _jobs[job_id].get("_trace")
+    if trace is None:
+        raise HTTPException(status_code=404, detail="No trace for this run")
+    return {"run_id": job_id, "summary": trace.summary(), "events": trace.events}
+
+
+@app.get("/graph/{run_id}")
+async def graph(run_id: str, user_id: str = "demo"):
+    """Nodes and edges for the graph view."""
+    nodes, edges = _collect_graph(user_id, run_id)
+    if not nodes:
+        raise HTTPException(status_code=404, detail="No graph for this run")
+    ids = {n["id"] for n in nodes}
+    return {
+        "nodes": [
+            {"id": n["id"], "name": n.get("name"), "type": n.get("type"),
+             "path": n.get("path"), "description": n.get("description"),
+             "line_start": n.get("line_start"), "line_end": n.get("line_end")}
+            for n in nodes
+        ],
+        "edges": [
+            {"source": e.get("source_id"), "target": e.get("target_id"),
+             "type": e.get("type"), "description": e.get("description")}
+            for e in edges
+            if e.get("source_id") in ids and e.get("target_id") in ids
+        ],
+    }
 
 
 def _collect_graph(user_id: str, run_id: str):
