@@ -19,7 +19,9 @@ LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "watsonx")  # "watsonx" | "bobshel
 
 MAX_FILES: int = int(os.getenv("ANALYSER_MAX_FILES", "500"))
 MAX_FILE_BYTES: int = int(os.getenv("ANALYSER_MAX_FILE_BYTES", str(512 * 1024)))
-CHUNK_LINES: int = 1200
+# A chunk must fit inside the provider's per-request token cap. Groq's free
+# tier rejects anything over 8000 tokens, which ~250 lines stays well under.
+CHUNK_LINES: int = int(os.getenv("ANALYSER_CHUNK_LINES", "250"))
 EMBED_DIM: int = 384
 BATCH_SIZE: int = 500
 

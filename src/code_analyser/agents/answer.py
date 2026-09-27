@@ -32,7 +32,11 @@ def run_answer_agent(
         except LLMFormatError:
             continue
 
-        cited_ids = {c.get("node_id") for c in raw.get("citations", [])}
+        # Models return citations either as objects or as bare id strings.
+        cited_ids = {
+            c.get("node_id") if isinstance(c, dict) else c
+            for c in (raw.get("citations") or [])
+        }
         subgraph_ids = set(raw.get("subgraph_node_ids", []))
         all_cited = cited_ids | subgraph_ids
 
@@ -48,7 +52,11 @@ def run_answer_agent(
                 )
             continue
 
-        citations = [Citation.model_validate(c) for c in raw.get("citations", [])]
+        citations = [
+            Citation.model_validate(c)
+            for c in (raw.get("citations") or [])
+            if isinstance(c, dict)
+        ]
         return AnswerOutput(
             answer=raw.get("answer", ""),
             citations=citations,
