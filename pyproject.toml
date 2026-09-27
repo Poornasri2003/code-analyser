@@ -11,7 +11,6 @@ license = {text = "MIT"}
 dependencies = [
     "pydantic>=2.7",
     "neo4j>=5.20",
-    "sentence-transformers>=3.0",
     "ibm-watsonx-ai>=1.1",
     "groq>=0.11",
     "openai>=1.40",
@@ -28,6 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov", "ruff"]
+transformer = ["sentence-transformers>=3.0"]
 
 [project.scripts]
 analyser = "code_analyser.cli:main"

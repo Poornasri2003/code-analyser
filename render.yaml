@@ -1,14 +1,33 @@
 services:
   - type: web
     name: code-analyser
-    env: python
+    runtime: python
+    plan: free
     buildCommand: pip install -e .
     startCommand: uvicorn code_analyser.api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
-      - key: LLM_PROVIDER
-        value: watsonx
+      # No graph database required: the in-memory store keeps a run's graph in
+      # the process, which is all a live demo needs.
       - key: STORE_TYPE
-        value: neo4j
+        value: inmemory
+      # The hashing embedder avoids torch, which does not fit the free plan.
+      - key: EMBEDDER
+        value: hashing
+      - key: ANALYSER_MAX_FILES
+        value: "6"
+      - key: ANALYSER_CHUNK_LINES
+        value: "250"
+      - key: ANALYSER_WORKDIR
+        value: /tmp/code_analyser_work
+      # Provider: set LLM_PROVIDER to watsonx or groq, then fill that
+      # provider's keys in the Render dashboard. sync:false keeps them secret.
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
       - key: WATSONX_API_KEY
         sync: false
       - key: WATSONX_URL
@@ -17,9 +36,3 @@ services:
         sync: false
       - key: WATSONX_MODEL_ID
         value: ibm/granite-3-8b-instruct
-      - key: NEO4J_URI
-        sync: false
-      - key: NEO4J_USER
-        sync: false
-      - key: NEO4J_PASSWORD
-        sync: false
